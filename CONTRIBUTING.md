@@ -17,28 +17,40 @@ Open a PR that appends a single object to the `plugins` array:
 
 ```jsonc
 {
-  "id": "yourname.cool-plugin",          // globally unique, reverse-DNS-ish
+  "id": "yourname.cool-plugin", // globally unique, reverse-DNS-ish
   "name": "Cool Plugin",
   "author": "yourname",
   "description": "One sentence on what it does.",
   "tagline": "Short hook (optional)",
-  "categories": ["devtools"],            // from the top-level categories list
-  "source": { "type": "github", "repo": "yourname/cool-plugin" },
+  "categories": ["devtools"], // from the top-level categories list
+  "source": {
+    "type": "github",
+    "repo": "yourname/cool-plugin",
+    "revision": "<full 40-character commit SHA>",
+  },
+  "release": { "sha256": "<SHA-256 of release.json>" },
   "license": "MIT",
-  "keywords": ["taiku", "..."]
+  "keywords": ["taiku", "..."],
   // vetStatus is set by maintainers during review — do not set it yourself.
 }
 ```
 
-- `source.type` is **`github`** with `repo: "owner/name"`; taiku fetches your
-  `manifest.json` from that repo's default branch at install time.
+- `source.type` is **`github`** with `repo: "owner/name"` and a full commit SHA.
+  Commit the deployable files and `release.json` at that revision. Branches,
+  tags, and abbreviated SHAs are refused.
+- Generate `release.json` with the [release packaging tool](https://github.com/taiku-dev/taiku/blob/main/packages/plugin-sdk/README.md#marketplace-releases).
+  It contains the manifest and hashes of every included interface and asset file.
+  Copy the printed descriptor digest into `release.sha256`.
 - Keep `id` stable forever — it's how installs and updates are keyed.
 - Don't set `vetStatus`; reviewers assign it.
 
 ## 3. Review
 
-A maintainer checks the manifest, the repo, and the declared permissions, then
-merges. CI validates your entry's schema on every PR.
+A maintainer reviews the manifest, all code and files at the pinned commit,
+and the declared permissions, then merges. CI verifies the descriptor and file
+hashes for new **and changed** entries and labels every release change
+`needs-manual-review`. Download failures and digest mismatches fail the check.
+CI verifies bytes; it does not decide whether code is safe.
 
 ### Plugins that use integrations
 
@@ -51,5 +63,9 @@ scrutiny.
 
 ## Removing or updating a plugin
 
-Open a PR editing or deleting your entry. Updating the plugin's *code* needs no
-PR here — taiku always fetches the latest `manifest.json` from your repo.
+Open a PR editing or deleting your entry. Every code or asset update needs a
+new reviewed commit and descriptor digest in this registry. Installed releases
+stay fixed; users explicitly reinstall to choose a newer release.
+
+Custom-URL installs in taiku remain a separate development workflow and can
+change on reload. They are not marketplace-reviewed releases.
