@@ -1,8 +1,8 @@
 # Contributing a plugin
 
 taiku's community registry is curated like Obsidian's: **anyone can open a PR,
-and a maintainer reviews and merges it.** Merging is the approval step — only
-maintainers can merge, so nothing ships unreviewed.
+and a maintainer reviews and merges it.** Merging is the approval step. Green
+validation checks or a review label alone do not authorize publication.
 
 ## 1. Build and host your plugin
 
@@ -48,16 +48,24 @@ Open a PR that appends a single object to the `plugins` array:
 
 A maintainer reviews the manifest, all code and files at the pinned commit,
 and the declared permissions, then merges. CI verifies the descriptor and file
-hashes for new **and changed** entries and labels every release change
-`needs-manual-review`. Download failures and digest mismatches fail the check.
+hashes for new **and changed** entries and emits a manual-review notice for every
+release change. Same-repository PRs also receive the `needs-manual-review` label;
+fork PR tokens cannot write labels/comments, so their notice stays in the check.
+Download failures and digest mismatches fail the check.
 CI verifies bytes; it does not decide whether code is safe.
+
+Maintainer requirement: protect `main` with required code-owner approval,
+dismiss stale approvals after changes, prohibit bypass and keep automatic merge
+disabled. `.github/CODEOWNERS` covers the registry, validator and workflow as
+well as its own policy. CODEOWNERS without enforced repository protection is
+not a merge gate. Until that protection is established, keep release PRs unmerged.
 
 ### Plugins that use integrations
 
 If your plugin's `manifest.json` declares **`integrations`** (it brokers
 third-party API access — GitHub, Slack, SerpAPI, … — through taiku's Composio
-bridge), CI labels the PR **`needs-manual-review`** and a maintainer must
-manually approve it, regardless of anything else. This is intentional: an
+bridge), CI reports it for extra review and a maintainer must manually approve
+it, regardless of anything else. This is intentional: an
 integration plugin can act on a user's connected accounts, so it gets extra
 scrutiny.
 

@@ -1,0 +1,8 @@
+# Every release and every change to its verification policy needs a maintainer.
+# Repository protection must require code-owner approval and dismiss stale reviews.
+* @nathanjzhao
+
+# Explicit security-sensitive paths; these share the repository-wide owner.
+/scripts/validate*.mjs @nathanjzhao
+/.github/workflows/validate.yml @nathanjzhao
+/.github/CODEOWNERS @nathanjzhao

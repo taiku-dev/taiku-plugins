@@ -6,6 +6,7 @@ on:
       - community-plugins.json
       - scripts/validate*.mjs
       - .github/workflows/validate.yml
+      - .github/CODEOWNERS
 
 permissions:
   contents: read
@@ -40,6 +41,12 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
+            const message = 'This PR changes a marketplace release. A maintainer must review the code and files at the exact pinned commit and release digest before merging. The workflow log identifies integrations that require extra permission review.';
+            core.notice(message);
+            // Fork pull_request tokens cannot label or comment. Keep validation
+            // and the review notice without changing to pull_request_target.
+            const headRepo = context.payload.pull_request?.head?.repo?.full_name;
+            if (headRepo !== `${context.repo.owner}/${context.repo.repo}`) return;
             await github.rest.issues.addLabels({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -50,7 +57,7 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: context.issue.number,
-              body: 'This PR changes a marketplace release. A maintainer must review the code and files at the exact pinned commit and release digest before merging. The workflow log identifies integrations that require extra permission review.',
+              body: message,
             });
 
       - name: Fail if schema invalid

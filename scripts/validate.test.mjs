@@ -122,3 +122,42 @@ test("refuses hosted community releases and traversal paths", () => {
   t.entry.release.sha256 = hash(t.resources[t.base + "release.json"]);
   assert.equal(run(t.entry, t.resources).status, 1);
 });
+
+async function annotateReview(headRepo) {
+  // Execute the workflow's actual github-script body with a read-only fork
+  // token model; don't duplicate its policy in a test-only implementation.
+  const workflow = readFileSync(".github/workflows/validate.yml", "utf8");
+  const script = workflow.match(/          script: \|\n((?: {12}.*\n|\n)+)/)[1];
+  const calls = [];
+  const notices = [];
+  const write = (method) => async () => {
+    if (headRepo !== "taiku-dev/taiku-plugins") {
+      throw new Error("Resource not accessible by integration (403)");
+    }
+    calls.push(method);
+  };
+  const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+  await new AsyncFunction("github", "context", "core", script)(
+    { rest: { issues: { addLabels: write("label"), createComment: write("comment") } } },
+    {
+      repo: { owner: "taiku-dev", repo: "taiku-plugins" },
+      issue: { number: 42 },
+      payload: { pull_request: { head: { repo: { full_name: headRepo } } } },
+    },
+    { notice: (message) => notices.push(message) },
+  );
+  return { calls, notices };
+}
+
+test("fork release review stays visible without token writes", async () => {
+  for (const repo of ["contributor/fork", undefined]) {
+    const result = await annotateReview(repo);
+    assert.deepEqual(result.calls, []);
+    assert.match(result.notices.join("\n"), /maintainer must review/i);
+  }
+});
+
+test("same-repository release review labels and comments", async () => {
+  const result = await annotateReview("taiku-dev/taiku-plugins");
+  assert.deepEqual(result.calls, ["label", "comment"]);
+});
