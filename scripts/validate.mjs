@@ -1,115 +1,161 @@
-// Validates community-plugins.json on every PR and flags plugins that declare
-// `integrations` (third-party API brokering) for mandatory manual review.
-//
+// Registry entries bind the complete reviewed release at an immutable commit.
 // Usage: node scripts/validate.mjs <currentFile> [baseFile]
-//   currentFile  the community-plugins.json in the PR head
-//   baseFile     (optional) the same file from the PR base; when given, only
-//                NEWLY ADDED plugin entries are integration-scanned
-//
-// Exit code is always 0 (schema errors fail loudly via process.exitCode=1).
-// It writes `needs_review=true|false` and `schema_ok=true|false` to
-// $GITHUB_OUTPUT so the workflow can label the PR.
-
 import { readFileSync, appendFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 
 const [, , currentPath, basePath] = process.argv;
-
-function out(key, val) {
-  if (process.env.GITHUB_OUTPUT) {
-    appendFileSync(process.env.GITHUB_OUTPUT, `${key}=${val}\n`);
-  }
+const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
+const digest = /^[0-9a-f]{64}$/;
+const maxReleaseBytes = 24 * 1024 * 1024;
+function out(key, value) {
+  if (process.env.GITHUB_OUTPUT)
+    appendFileSync(process.env.GITHUB_OUTPUT, `${key}=${value}\n`);
+}
+function fail(message) {
+  console.error(`✗ ${message}`);
+  process.exitCode = 1;
+}
+function read(path) {
+  return JSON.parse(readFileSync(path, "utf8"));
 }
 
-function fail(msg) {
-  console.error(`✗ ${msg}`);
-  process.exitCode = 1;
+async function bytes(url, maximum) {
+  const response = await fetch(url, {
+    redirect: "error",
+    signal: AbortSignal.timeout(15_000),
+  });
+  if (!response.ok || !response.body) throw new Error(`Could not fetch ${url}`);
+  const reader = response.body.getReader();
+  let size = 0;
+  const chunks = [];
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > maximum) throw new Error("Release exceeds the size limit");
+      chunks.push(value);
+    }
+  } finally {
+    await reader.cancel();
+    reader.releaseLock();
+  }
+  return Buffer.concat(chunks);
+}
+function filePath(path) {
+  return (
+    path.length <= 512 &&
+    path
+      .split("/")
+      .every(
+        (part) => /^[a-zA-Z0-9_.-]+$/.test(part) && ![".", ".."].includes(part),
+      )
+  );
+}
+async function review(entry) {
+  const root = `https://raw.githubusercontent.com/${entry.source.repo}/${entry.source.revision}/`;
+  const descriptor = await bytes(root + "release.json", 1024 * 1024);
+  if (hash(descriptor) !== entry.release.sha256)
+    throw new Error("Release descriptor changed since review");
+  const release = JSON.parse(descriptor.toString("utf8"));
+  if (
+    release?.format !== 1 ||
+    release.manifest?.id !== entry.id ||
+    !release.files ||
+    typeof release.files !== "object" ||
+    Array.isArray(release.files) ||
+    Object.keys(release.files).length > 256
+  )
+    throw new Error("Invalid release descriptor or manifest id");
+  let size = descriptor.byteLength;
+  for (const [path, file] of Object.entries(release.files)) {
+    if (
+      !filePath(path) ||
+      !file ||
+      !digest.test(file.sha256) ||
+      !/^[a-z]+\/[a-zA-Z0-9.+-]+$/.test(file.type)
+    )
+      throw new Error(`Invalid release file: ${path}`);
+    const content = await bytes(root + path, maxReleaseBytes - size);
+    size += content.byteLength;
+    if (hash(content) !== file.sha256)
+      throw new Error(`Release file changed since review: ${path}`);
+  }
+  for (const panel of release.manifest.panels ?? []) {
+    if (
+      panel.url ||
+      (panel.htmlUrl && !Object.hasOwn(release.files, panel.htmlUrl))
+    )
+      throw new Error("Panel HTML must be included in the reviewed release");
+  }
+  const integrations = release.manifest.integrations;
+  if (Array.isArray(integrations) && integrations.length) {
+    const toolkits = integrations
+      .map((i) => (typeof i === "string" ? i : i?.toolkit))
+      .filter(Boolean);
+    console.log(
+      `• ${entry.id} → integrations: ${toolkits.join(", ")} (extra permission review required)`,
+    );
+  }
+  console.log(
+    `✓ ${entry.id}: reviewed digest and ${Object.keys(release.files).length} files verified at ${entry.source.revision}`,
+  );
 }
 
 let current;
 try {
-  current = JSON.parse(readFileSync(currentPath, "utf8"));
-} catch (e) {
-  fail(`community-plugins.json is not valid JSON: ${e.message}`);
-  out("schema_ok", "false");
-  out("needs_review", "false");
-  process.exit();
+  current = read(currentPath);
+} catch (error) {
+  fail(`community-plugins.json is not valid JSON: ${error.message}`);
 }
-
-// ---- schema ----
-const REQUIRED = ["id", "name", "author", "description", "source"];
-const plugins = Array.isArray(current.plugins) ? current.plugins : null;
-if (!plugins) fail("top-level `plugins` must be an array");
-
+const plugins = Array.isArray(current?.plugins) ? current.plugins : null;
+if (!plugins) fail("top-level plugins must be an array");
 const seen = new Set();
-for (const [i, p] of (plugins ?? []).entries()) {
-  const where = `plugins[${i}]${p?.id ? ` (${p.id})` : ""}`;
-  for (const f of REQUIRED) {
-    if (p?.[f] == null || p[f] === "") fail(`${where}: missing required field \`${f}\``);
+for (const [index, entry] of (plugins ?? []).entries()) {
+  const where = `plugins[${index}]`;
+  for (const field of ["id", "name", "author", "description"]) {
+    if (typeof entry?.[field] !== "string" || !entry[field].trim())
+      fail(`${where}: missing ${field}`);
   }
-  if (typeof p?.id === "string") {
-    if (seen.has(p.id)) fail(`${where}: duplicate id \`${p.id}\``);
-    seen.add(p.id);
+  if (seen.has(entry?.id)) fail(`${where}: duplicate id`);
+  seen.add(entry?.id);
+  // Community sources are public GitHub repositories, as CONTRIBUTING defines.
+  // No arbitrary hosted URL can make the CI runner request internal services.
+  if (
+    entry?.source?.type !== "github" ||
+    !/^[a-zA-Z0-9_-]+\/[a-zA-Z0-9_.-]+$/.test(entry.source.repo ?? "")
+  )
+    fail(`${where}: source must be a GitHub owner/repo`);
+  if (!/^[0-9a-f]{40}$/.test(entry?.source?.revision ?? ""))
+    fail(`${where}: source.revision must be a full commit SHA`);
+  if (!digest.test(entry?.release?.sha256 ?? ""))
+    fail(`${where}: release.sha256 must bind the reviewed release.json`);
+}
+let base = new Map();
+if (basePath) {
+  try {
+    base = new Map(
+      read(basePath).plugins.map((entry) => [entry.id, JSON.stringify(entry)]),
+    );
+  } catch {
+    /* Fail closed: scan all entries when the base cannot be read. */
   }
-  const src = p?.source;
-  if (src?.type === "github") {
-    if (!/^[^/\s]+\/[^/\s]+$/.test(src.repo ?? "")) {
-      fail(`${where}: source.repo must be "owner/name", got ${JSON.stringify(src.repo)}`);
+}
+const changed = (plugins ?? []).filter(
+  (entry) => base.get(entry?.id) !== JSON.stringify(entry),
+);
+out("needs_review", changed.length ? "true" : "false");
+if (!process.exitCode) {
+  for (const entry of changed) {
+    try {
+      await review(entry);
+    } catch (error) {
+      fail(`${entry.id}: ${error.message}`);
     }
-  } else if (src?.type === "hosted") {
-    if (!src.manifestUrl) fail(`${where}: hosted source needs a manifestUrl`);
-  } else {
-    fail(`${where}: source.type must be "github" or "hosted"`);
   }
 }
 out("schema_ok", process.exitCode ? "false" : "true");
-
-// ---- which entries are new (only scan those for integrations) ----
-let baseIds = null;
-if (basePath) {
-  try {
-    const base = JSON.parse(readFileSync(basePath, "utf8"));
-    baseIds = new Set((base.plugins ?? []).map((p) => p.id));
-  } catch {
-    baseIds = null; // base unreadable (e.g. new file) → scan everything
-  }
-}
-const toScan = (plugins ?? []).filter(
-  (p) => p?.source?.type === "github" && (!baseIds || !baseIds.has(p.id)),
-);
-
-// ---- fetch each new plugin's manifest, check for `integrations` ----
-async function fetchManifest(repo) {
-  for (const branch of ["main", "master"]) {
-    const url = `https://raw.githubusercontent.com/${repo}/${branch}/manifest.json`;
-    try {
-      const r = await fetch(url);
-      if (r.ok) return await r.json();
-    } catch {
-      /* try next branch */
-    }
-  }
-  return null;
-}
-
-const flagged = [];
-for (const p of toScan) {
-  const manifest = await fetchManifest(p.source.repo);
-  if (manifest == null) {
-    console.log(`• ${p.id}: manifest.json not reachable yet (${p.source.repo}) — reviewer should verify manually`);
-    continue;
-  }
-  const ints = manifest.integrations;
-  if (Array.isArray(ints) && ints.length > 0) {
-    const toolkits = ints.map((e) => (typeof e === "string" ? e : e?.toolkit)).filter(Boolean);
-    flagged.push(`${p.id} → integrations: ${toolkits.join(", ")}`);
-  }
-}
-
-if (flagged.length) {
-  console.log("\n⚠ Plugins declaring integrations (require manual review):");
-  for (const f of flagged) console.log(`  - ${f}`);
-}
-out("needs_review", flagged.length ? "true" : "false");
-
-if (process.exitCode) console.error("\nSchema validation failed — fix the errors above.");
-else console.log("\n✓ Schema valid.");
+if (!process.exitCode)
+  console.log(
+    "✓ Registry valid; maintainers must review the pinned code and files before merging.",
+  );
