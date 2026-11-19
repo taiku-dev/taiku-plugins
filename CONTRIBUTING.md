@@ -9,7 +9,8 @@ maintainers can merge, so nothing ships unreviewed.
 Your plugin lives in **your own** public GitHub repo with a `manifest.json` at
 its root. If you're starting fresh, copy a folder from
 [`taiku-dev/taiku-plugin-examples`](https://github.com/taiku-dev/taiku-plugin-examples)
-(or the `blank-static` template) and add `@taiku/plugin-sdk` for typed helpers.
+(or the `blank-static` template). The examples talk to taiku directly and need
+no package.
 
 ## 2. Add one entry to `community-plugins.json`
 

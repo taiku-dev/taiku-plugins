@@ -14,7 +14,7 @@ appear in taiku's in-app plugin marketplace (**Browse** tab).
   publishes your plugin to everyone, typically within a few minutes.
 - Want to build a plugin first? Start from
   [`taiku-dev/taiku-plugin-examples`](https://github.com/taiku-dev/taiku-plugin-examples)
-  (example plugins + a `blank-static` template + the `@taiku/plugin-sdk`).
+  (example plugins and a `blank-static` template).
 
 ## Submitting a plugin
 
